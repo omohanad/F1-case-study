@@ -1,0 +1,734 @@
+# =============================================================================
+# F1 Race Data Analysis
+# Purpose : Answer 7 business questions using F1 historical race data
+#
+# Questions covered:
+#   Q1 - Youngest driver to ever win the Monaco Grand Prix
+#   Q2 - Top 10 constructs winning any race over the provided time span (bar chart)
+#   Q3 - Drivers qualifying q2 concentration by country (top 10 countries) (bar chart)
+#   Q4 - top 10 drivers with the longest careers showing how long did their career last. (bar chart)
+#   Q5 - Monaco Grand Prix finishing time since 1950 (time series analysis)[line chart]
+#   Q6 - Reasons drivers were unable to finish the races ranked descending  (excluding +Laps) (bar chart)
+#   Q7 - Top 10 races with highest accident records (which race at which year) (bar chart)
+#
+
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# SECTION 1 — Import Libraries
+# -----------------------------------------------------------------------------
+# pandas     : for loading and working with tabular data (like Excel but in Python)
+# matplotlib : for drawing charts and saving them as images 
+# numpy      : for math operations, mainly used here for colour gradients
+# warnings   : to silence harmless warning messages that clutter the output
+# os         : to work with file and folder paths in a way that works on any OS
+# -----------------------------------------------------------------------------
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import numpy as np
+import warnings
+import os
+
+# Hide pandas and matplotlib warnings that aren't useful to us
+warnings.filterwarnings("ignore")
+
+
+# -----------------------------------------------------------------------------
+# SECTION 2 — Chart Styling (Dark F1 Theme)
+# -----------------------------------------------------------------------------
+# plt.rcParams lets us set default styles for ALL charts at once,
+# so we don't have to repeat the same styling code in every chart.
+# -----------------------------------------------------------------------------
+
+plt.rcParams.update({
+    "figure.facecolor"  : "#0d1117",   # outer background (very dark)
+    "axes.facecolor"    : "#161b22",   # chart area background (dark gray)
+    "axes.edgecolor"    : "#30363d",   # border around the chart area
+    "axes.labelcolor"   : "#c9d1d9",   # axis label text colour (light gray)
+    "xtick.color"       : "#8b949e",   # x-axis tick label colour
+    "ytick.color"       : "#8b949e",   # y-axis tick label colour
+    "text.color"        : "#c9d1d9",   # general text colour
+    "grid.color"        : "#21262d",   # grid line colour
+    "grid.linestyle"    : "--",        # dashed grid lines
+    "grid.alpha"        : 0.5,         # grid line transparency (0=invisible, 1=solid)
+    "font.family"       : "DejaVu Sans",
+    "axes.titlesize"    : 13,
+    "axes.labelsize"    : 11,
+    "axes.titleweight"  : "bold",
+})
+
+# Colours we'll reuse across multiple charts
+F1_RED  = "#e8002d"   # official F1 red
+F1_GOLD = "#ffd700"   # gold, used for data labels so they stand out
+
+# A list of 10 distinct colours — used when we need to colour each bar differently
+PALETTE = [
+    "#e8002d", "#ff6b6b", "#ff9f43", "#ffd700", "#26de81",
+    "#45aaf2", "#a55eea", "#fd9644", "#2bcbba", "#fc5c65"
+]
+
+
+# -----------------------------------------------------------------------------
+# SECTION 3 — Folder Paths
+# -----------------------------------------------------------------------------
+# __file__ gives us the path of THIS script, wherever it's saved.
+# We use that to build paths to the Data and Outputs folders relative to it,
+# -----------------------------------------------------------------------------
+
+# The folder this script lives in
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Go one level up (..) then into the Data and Outputs folders
+DATA_DIR = os.path.join(BASE_DIR, "..", "Data")
+OUT_DIR  = os.path.join(BASE_DIR, "..", "Outputs")
+
+# Create the Outputs folder automatically if it doesn't already exist
+os.makedirs(OUT_DIR, exist_ok=True)
+
+print("Data folder   :", DATA_DIR)
+print("Output folder :", OUT_DIR)
+
+
+# -----------------------------------------------------------------------------
+# HELPER FUNCTION — save_chart()
+# -----------------------------------------------------------------------------
+# Instead of repeating the save code after every single chart,
+#  wrap it in a small function so can call with just one line.
+#
+# Parameters:
+#   fig   : the matplotlib figure object we want to save
+#   fname : the filename we want, e.g. "q2_constructors.png"
+# -----------------------------------------------------------------------------
+
+def save_chart(fig, fname):
+    full_path = os.path.join(OUT_DIR, fname)
+    fig.savefig(full_path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    print(f"  ✓  Saved → {fname}")
+
+
+# =============================================================================
+# SECTION 4 — Load & Build the Data Model
+# =============================================================================
+# We have 8 separate CSV files. We load them all into pandas DataFrames,
+# then JOIN them together into one big "master" table that has everything (Fact Table)
+# we need in a single place — race results + race dates + driver details + circuits.
+# =============================================================================
+
+print("\n" + "=" * 50)
+print("  LOADING ALL CSV FILES AND CREATE THE MODEL.....")
+print("=" * 50)
+
+
+# -----------------------------------------------------------------------------
+# HELPER FUNCTION — load_csv()
+# -----------------------------------------------------------------------------
+# Loads a CSV file from the Data folder and cleans up the column names
+# (strips spaces, makes everything lowercase, replaces spaces with underscores).
+# This way we always access columns the same way: df["race_name"], df["driver_id"], etc.
+# -----------------------------------------------------------------------------
+
+def load_csv(filename):
+    path = os.path.join(DATA_DIR, filename)
+    df = pd.read_csv(path, low_memory=False)
+
+    # Clean column names so they're consistent and easy to type
+    df.columns = (
+        df.columns
+        .str.strip()             # remove leading/trailing spaces
+        .str.lower()             # make all lowercase
+        .str.replace(" ", "_")   # replace spaces with underscores
+    )
+    return df
+
+
+# Load each CSV file into its own DataFrame (one table = one variable)
+circuits     = load_csv("f1_circuits.csv")            # circuit info (name, country, location)
+constructors = load_csv("f1_constructors.csv")         # constructor/team details
+con_stand    = load_csv("f1_constructor_standings.csv")# constructor championship points per season
+drv_stand    = load_csv("f1_driver_standings.csv")     # driver championship points per season
+drivers      = load_csv("f1_drivers.csv")              # driver info (name, date of birth, nationality)
+qualifying   = load_csv("f1_qualifying.csv")           # qualifying session lap times (Q1 / Q2 / Q3)
+races        = load_csv("f1_races.csv")                # race schedule (name, date, circuit)
+results      = load_csv("f1_results.csv")              # race results (finishing position, points, status)
+
+
+# -----------------------------------------------------------------------------
+# Fix date columns so Python understands them as actual dates (not plain text).
+# errors="coerce"  to replace the date string which is not prased  with NAN isnted of crashing 
+# -----------------------------------------------------------------------------
+drivers["dob"]  = pd.to_datetime(drivers["dob"],  errors="coerce")
+races["date"]   = pd.to_datetime(races["date"],   errors="coerce")
+
+
+# -----------------------------------------------------------------------------
+# Build the Master Fact Table
+# -----------------------------------------------------------------------------
+# We JOIN  several tables together so every row in the master table
+# has race results + race date + circuit country + driver name all in one place.
+# Using left join to avoid loss of data even if there is no matching rows 
+# -----------------------------------------------------------------------------
+#### This part is manual and could be changed in more automatic way insted of add each column by name 
+master = (
+    results
+
+    # Step 1: Add race date, race name, and circuit_id from the races table
+    .merge(
+        races[["season", "round", "race_name", "circuit_id", "date"]],
+        on=["season", "round"],      # match rows where season AND round are equal
+        how="left",
+        suffixes=("", "_race")       # if both tables have a "time" column, add "_race" to the races one
+    )
+
+    # Step 2: Add circuit country and locality from the circuits table
+    .merge(
+        circuits[["circuit_id", "circuit_name", "locality", "country"]],
+        on="circuit_id",
+        how="left"
+    )
+
+    # Step 3: Add driver name, date of birth, and nationality from the drivers table
+    .merge(
+        drivers[["driver_id", "given_name", "family_name", "dob", "nationality"]],
+        on="driver_id",
+        how="left"
+    )
+)
+
+# Convert position to a proper number so we can filter (e.g. position == 1 for winners).
+# Non-numeric values like "R" (retired) or "W" (withdrawn) become NaN — that's fine.
+master["position_num"] = pd.to_numeric(master["position"], errors="coerce")
+
+# Combine first name + last name into one convenient "full_name" column
+master["full_name"] = (
+    master["given_name"].fillna("") + " " + master["family_name"].fillna("")
+).str.strip()
+
+
+# Add nationality to the qualifying table so we can group by country later in Q3
+qual_full = qualifying.merge(
+    drivers[["driver_id", "nationality"]],
+    on="driver_id",
+    how="left"
+)
+
+
+# Print a summary so we know everything loaded correctly
+print(f"\n  Rows loaded per table:")
+print(f"    results       : {len(results):>7,}")
+print(f"    races         : {len(races):>7,}")
+print(f"    drivers       : {len(drivers):>7,}")
+print(f"    qualifying    : {len(qualifying):>7,}")
+print(f"    circuits      : {len(circuits):>7,}")
+print(f"    constructors  : {len(constructors):>7,}")
+print(f"    con_stand     : {len(con_stand):>7,}")
+print(f"    drv_stand     : {len(drv_stand):>7,}")
+print(f"    master table  : {len(master):>7,}  (results joined with races + circuits + drivers)")
+print("\n  Data model ready ✓\n")
+
+
+# =============================================================================
+# Q1 — Youngest Driver to Win the Monaco Grand Prix
+# =============================================================================
+# Approach:
+#   1. Filter the master table to Monaco GP race winners (position = 1)
+#   2. Calculate each winner's exact age on race day using their date of birth
+#   3. Find the row with the smallest age
+# =============================================================================
+
+print("=" * 50)
+print("  Q1 — Youngest Monaco Grand Prix Winner")
+print("=" * 50)
+
+# Filter: only Monaco races where someone finished 1st and we have their birthday & race date
+monaco_wins = master[
+    master["race_name"].str.contains("Monaco", case=False, na=False) &  # is a Monaco race
+    (master["position_num"] == 1) &                                       # finished 1st
+    master["dob"].notna() &                                               # we know their birthday
+    master["date"].notna()                                                # we know the race date
+].copy()   # .copy() avoids a pandas warning when we add a new column to a filtered DataFrame
+
+# Calculate age at the time of the race win:
+# Subtracting two dates gives a timedelta in days → divide by 365.25 to convert to years
+monaco_wins["age_at_race"] = (monaco_wins["date"] - monaco_wins["dob"]).dt.days / 365.25
+
+# Pick the row with the smallest age value
+youngest = monaco_wins.nsmallest(1, "age_at_race").iloc[0]
+
+#Print the Winner with age 
+print(f"""
+  
+    Youngest Monaco Grand Prix Winner               
+                                                    
+    Driver : {youngest['full_name']:<38}  
+    Year   : {int(youngest['season']):<38}  
+    Age    : {youngest['age_at_race']:.2f} years{'':<31}  
+ 
+""")
+
+
+# =============================================================================
+# Q2 — Top 10 Constructors by Total Race Wins
+# =============================================================================
+# Approach:
+#   1. Keep only rows where position = 1 (the race winner)
+#   2. Count how many times each constructor name appears = their total win count
+#   3. Take the top 10 and draw a horizontal bar chart
+# =============================================================================
+
+print("=" * 50)
+print("  Q2 — Top 10 Constructors by Race Wins")
+print("=" * 50)
+
+# Count wins per constructor
+con_wins = (
+    master[master["position_num"] == 1]   # keep only race winners
+    .groupby("constructor")               # group all winner rows by team name
+    .size()                               # count rows per group = number of wins
+    .sort_values(ascending=False)         # most wins at the top
+    .head(10)                             # keep only the top 10
+    .reset_index(name="wins")             # turn the Series back into a proper DataFrame
+)
+
+# --- Draw the chart ---
+fig, ax = plt.subplots(figsize=(13, 6))
+
+# [::-1] reverses the list so the constructor with the MOST wins appears at the TOP
+bars = ax.barh(
+    con_wins["constructor"][::-1],
+    con_wins["wins"][::-1],
+    color=PALETTE[::-1][:10],
+    edgecolor="none",
+    height=0.65
+)
+
+# Add a number label at the end of each bar so the exact value is easy to read
+for bar in bars:
+    ax.text(
+        bar.get_width() + 1.5,               # x: just past the right end of the bar
+        bar.get_y() + bar.get_height() / 2,  # y: vertically centred on the bar
+        f"{int(bar.get_width())}",           # the text: win count as an integer
+        va="center", fontsize=10,
+        color=F1_GOLD, fontweight="bold"
+    )
+
+# Add a dotted vertical line at the median so the viewer has a benchmark
+ax.axvline(
+    con_wins["wins"].median(),
+    color="#8b949e", linestyle=":", linewidth=1,
+    label=f"Median ({int(con_wins['wins'].median())} wins)"
+)
+
+ax.set_xlabel("Total Race Wins")
+ax.set_title("Top 10 Constructors by Race Wins  |  F1 All-Time")
+ax.set_xlim(0, con_wins["wins"].max() * 1.15)  # extra space on the right for the labels
+ax.grid(axis="x")
+ax.legend(fontsize=9)
+fig.tight_layout()
+save_chart(fig, "Q2_Top 10 Constructors by Race Wins.png")
+plt.close()
+print()
+
+
+# =============================================================================
+# Q3 — Q2 Qualifying Appearances by Driver Nationality (Top 10 Countries)
+# =============================================================================
+# Approach:
+#   1. A driver only gets a Q2 time if they advanced past Q1
+#   2. Filter qualifying rows where the Q2 column is not empty
+#   3. Count appearances by nationality and plot the top 10
+# =============================================================================
+
+print("=" * 50)
+print("  Q3 — Q2 Qualifying Appearances by Country")
+print("=" * 50)
+
+# Keep only rows where the Q2 column has an actual lap time (not empty / NaN)
+q2_entries = qual_full[
+    qual_full["q2"].notna() &                            # not a missing value
+    (qual_full["q2"].astype(str).str.strip() != "")      # not just an empty string
+]
+
+# Count Q2 appearances per nationality and take the top 10
+top_countries = (
+    q2_entries.groupby("nationality")
+    .size()
+    .sort_values(ascending=False)
+    .head(10)
+    .reset_index(name="q2_count")
+)
+
+# --- Draw the chart ---
+fig, ax = plt.subplots(figsize=(13, 6))
+
+bars = ax.bar(
+    top_countries["nationality"],
+    top_countries["q2_count"],
+    color=PALETTE,
+    edgecolor="none",
+    width=0.6
+)
+
+# Add count labels sitting just above each bar
+for bar in bars:
+    ax.text(
+        bar.get_x() + bar.get_width() / 2,   # x: horizontally centred on the bar
+        bar.get_height() + 8,                 # y: slightly above the top of the bar
+        f"{int(bar.get_height()):,}",          # the count with a thousands comma
+        ha="center", fontsize=10,
+        color=F1_GOLD, fontweight="bold"
+    )
+
+ax.set_ylabel("Q2 Appearances")
+ax.set_xlabel("Driver Nationality")
+ax.set_title("Top 10 Countries by Driver Q2 Qualifying Appearances")
+ax.set_ylim(0, top_countries["q2_count"].max() * 1.12)  # extra headroom for the labels
+ax.grid(axis="y")
+plt.xticks(rotation=25, ha="right")   # tilt x-axis labels so they don't overlap each other
+fig.tight_layout()
+save_chart(fig, "Q3_Q2 Qualifying Appearances by Driver Nationality.png")
+plt.close()
+print()
+
+
+# =============================================================================
+# Q4 — Top 10 Drivers with the Longest F1 Careers
+# =============================================================================
+# Approach:
+#   1. For each driver, find their first season (debut) and last season
+#   2. Career length = last season - first season + 1 (we add 1 to make it inclusive)
+#      e.g. active in 2000 and 2005 → 2005 - 2000 + 1 = 6 seasons
+#   3. Sort descending and take the top 10
+# =============================================================================
+
+print("=" * 50)
+print("  Q4 — Top 10 Drivers with the Longest Careers")
+print("=" * 50)
+
+# Get the earliest and latest season for each driver
+career = (
+    master.groupby(["driver_id", "full_name"])["season"]
+    .agg(debut="min", last="max")   # debut = first season, last = most recent season
+    .reset_index()
+)
+
+# Career length in years (inclusive)
+career["career_yrs"] = career["last"] - career["debut"] + 1
+
+# Keep the top 10 by career length
+top_careers = career.nlargest(10, "career_yrs").reset_index(drop=True)
+
+# --- Draw the chart ---
+fig, ax = plt.subplots(figsize=(13, 6))
+
+# Generate a smooth colour gradient from light yellow to deep red
+# Drivers with longer careers get a deeper colour
+colors = plt.cm.YlOrRd(np.linspace(0.3, 0.9, len(top_careers)))
+
+bars = ax.barh(
+    top_careers["full_name"][::-1],
+    top_careers["career_yrs"][::-1],
+    color=colors,
+    edgecolor="none",
+    height=0.65
+)
+
+# Add a label showing both the career length and the year range
+for bar, (_, row) in zip(bars, top_careers.iloc[::-1].iterrows()):
+    label = f"{int(row['career_yrs'])} yrs  ({int(row['debut'])} – {int(row['last'])})"
+    ax.text(
+        bar.get_width() + 0.3,
+        bar.get_y() + bar.get_height() / 2,
+        label,
+        va="center", fontsize=9, color=F1_GOLD
+    )
+
+ax.set_xlabel("Career Length (Years, inclusive)")
+ax.set_title("Top 10 Drivers with the Longest F1 Careers")
+ax.set_xlim(0, top_careers["career_yrs"].max() * 1.25)  # extra space for the labels
+ax.grid(axis="x")
+fig.tight_layout()
+save_chart(fig, "Q4 — Top 10 Drivers with the Longest F1 Careers.png")
+plt.close()
+print()
+
+
+# =============================================================================
+# Q5 — Monaco Grand Prix Race Duration Since 1950 (Time Series)
+# =============================================================================
+# Approach:
+#   1. Filter to Monaco GP winners only
+#   2. Parse the finishing time string into total seconds
+#      (the raw data has mixed formats like "1:55:23.4" and "2:01:22")
+#   3. Convert to minutes and plot a line chart over time
+# =============================================================================
+
+print("=" * 50)
+print("  Q5 — Monaco GP Race Duration Over Time")
+print("=" * 50)
+
+
+# --- Helper function to convert a race time string into total seconds ---
+def parse_race_time(time_str):
+    """
+    Converts a race time string into a float representing total seconds.
+
+    The data comes in different formats depending on the era:
+        "1:55:23.4"  →  H:MM:SS.sss  →  hours, minutes, seconds
+        "55:23.4"    →  MM:SS.sss    →  minutes and seconds only
+        "3623.4"     →  plain number →  already in seconds
+
+    Returns:
+        float : total seconds
+        NaN   : if the value is missing, empty, or can't be parsed
+    """
+    # If the value is missing or empty, we can't use it
+    if pd.isna(time_str):
+        return np.nan
+
+    time_str = str(time_str).strip()
+
+    # Times starting with "+" are GAP times (e.g. "+1:23.4" = 1 min 23 sec behind the winner)
+    # Those are NOT full race durations, so we skip them
+    if time_str == "" or time_str.startswith("+"):
+        return np.nan
+
+    # Split on ":" to figure out which format we're dealing with
+    parts = time_str.split(":")
+
+    try:
+        if len(parts) == 3:
+            # Format: H:MM:SS.sss
+            hours   = int(parts[0])
+            minutes = int(parts[1])
+            seconds = float(parts[2])
+            return hours * 3600 + minutes * 60 + seconds
+
+        elif len(parts) == 2:
+            # Format: MM:SS.sss
+            minutes = int(parts[0])
+            seconds = float(parts[1])
+            return minutes * 60 + seconds
+
+        else:
+            # Format: plain seconds
+            return float(time_str)
+
+    except Exception:
+        # If anything unexpected happens, return NaN rather than crashing
+        return np.nan
+
+
+# Filter to Monaco GP winners only
+monaco_p1 = master[
+    master["race_name"].str.contains("Monaco", case=False, na=False) &
+    (master["position_num"] == 1)
+].copy()
+
+# Apply the time parser to each value in the "time" column
+monaco_p1["finish_sec"] = monaco_p1["time"].apply(parse_race_time)
+
+# Drop years where we couldn't get a valid time, then sort chronologically
+monaco_ts = monaco_p1.dropna(subset=["finish_sec"]).sort_values("season")
+
+# Convert from seconds to minutes for a cleaner y-axis scale
+monaco_ts["finish_min"] = monaco_ts["finish_sec"] / 60
+
+# --- Draw the chart ---
+fig, ax = plt.subplots(figsize=(15, 5))
+
+# Main line with small dot markers at each data point
+ax.plot(
+    monaco_ts["season"], monaco_ts["finish_min"],
+    color=F1_RED, linewidth=2.2, marker="o", markersize=5, zorder=3
+)
+
+# Shade the area below the line for visual depth (alpha controls transparency)
+ax.fill_between(
+    monaco_ts["season"],
+    monaco_ts["finish_min"],
+    monaco_ts["finish_min"].min() - 5,   # fill down to just below the minimum
+    alpha=0.12, color=F1_RED
+)
+
+# Find and annotate the fastest and slowest years
+fastest_year = monaco_ts.nsmallest(1, "finish_min").iloc[0]
+slowest_year = monaco_ts.nlargest(1, "finish_min").iloc[0]
+
+# Annotate fastest (arrow points down to the dot, label sits above)
+ax.annotate(
+    f"Fastest\n{int(fastest_year['season'])}",
+    xy=(fastest_year["season"], fastest_year["finish_min"]),
+    xytext=(fastest_year["season"], fastest_year["finish_min"] + 8),
+    arrowprops=dict(arrowstyle="->", color=F1_GOLD, lw=1.2),
+    color=F1_GOLD, fontsize=9, ha="center"
+)
+
+# Annotate slowest (arrow points up to the dot, label sits below)
+ax.annotate(
+    f"Slowest\n{int(slowest_year['season'])}",
+    xy=(slowest_year["season"], slowest_year["finish_min"]),
+    xytext=(slowest_year["season"], slowest_year["finish_min"] - 8),
+    arrowprops=dict(arrowstyle="->", color=F1_GOLD, lw=1.2),
+    color=F1_GOLD, fontsize=9, ha="center"
+)
+
+# Format y-axis to show "2h 5m" instead of just "125" minutes
+ax.yaxis.set_major_formatter(
+    mticker.FuncFormatter(lambda x, _: f"{int(x // 60)}h {int(x % 60)}m")
+)
+
+ax.set_xlabel("Season")
+ax.set_ylabel("Race Duration")
+ax.set_title("Monaco Grand Prix — Winner's Race Duration Since 1950")
+ax.set_xlim(monaco_ts["season"].min() - 1, monaco_ts["season"].max() + 1)
+ax.grid(axis="both")
+fig.tight_layout()
+save_chart(fig, "Q5_Monaco_Finish_Time.png")
+plt.close()
+print()
+
+
+# =============================================================================
+# Q6 — Most Common Reasons Drivers Didn't Finish (Excluding +Laps)
+# =============================================================================
+# Approach:
+#   1. Exclude "Finished" rows and rows starting with "+" 
+#      (+1 Lap, +2 Laps etc. mean the driver DID finish, just a lap or more behind)
+#   2. Everything else is a true DNF (Did Not Finish) — engine, accident, etc.
+#   3. Count each reason and plot the top 20 descending
+# =============================================================================
+
+print("=" * 50)
+print("  Q6 — DNF Reasons (Excluding +Lap Finishes)")
+print("=" * 50)
+
+# Keep rows where the driver did NOT finish properly:
+#   - status is not "Finished"
+#   - status does not start with "+" (rules out +1 Lap, +2 Laps, etc.)
+#   - status is not missing/NaN
+dnf = master[
+    (master["status"] != "Finished") &
+    (~master["status"].astype(str).str.strip().str.startswith("+")) &
+    master["status"].notna()
+]
+
+# Count how often each DNF reason appears and take the top 20
+dnf_counts = (
+    dnf.groupby("status")
+    .size()
+    .sort_values(ascending=False)
+    .head(20)
+    .reset_index(name="count")
+)
+
+# --- Draw the chart ---
+# Use a colour gradient: red for most common, green for least common
+bar_colors = plt.cm.RdYlGn_r(np.linspace(0.05, 0.85, len(dnf_counts)))
+
+fig, ax = plt.subplots(figsize=(13, 8))
+
+# Reverse [::-1] so the MOST common reason appears at the TOP of the chart
+bars = ax.barh(
+    dnf_counts["status"][::-1],
+    dnf_counts["count"][::-1],
+    color=bar_colors,
+    edgecolor="none",
+    height=0.7
+)
+
+# Add count labels at the end of each bar
+for bar in bars:
+    ax.text(
+        bar.get_width() + 2,
+        bar.get_y() + bar.get_height() / 2,
+        f"{int(bar.get_width()):,}",    # format with comma, e.g. "1,234"
+        va="center", fontsize=9,
+        color=F1_GOLD, fontweight="bold"
+    )
+
+ax.set_xlabel("Number of Occurrences")
+ax.set_title("Top 20 DNF Reasons in F1 History  |  Excluding +Lap Finishes")
+ax.set_xlim(0, dnf_counts["count"].max() * 1.14)
+ax.grid(axis="x")
+fig.tight_layout()
+save_chart(fig, "Q6 — DNF Reasons (Excluding +Lap Finishes).png")
+plt.close()
+print()
+
+
+# =============================================================================
+# Q7 — Top 10 Races with the Most Accident-Related Retirements
+# =============================================================================
+# Approach:
+#   1. Filter rows where the retirement status contains accident-related keywords
+#   2. Group by race + year (together they identify a unique race edition)
+#   3. Count incidents per race, take the top 10, and plot a vertical bar chart
+# =============================================================================
+
+print("=" * 50)
+print("  Q7 — Top 10 Races with Most Accidents")
+print("=" * 50)
+
+# Filter to rows where the status contains any accident-related keyword.
+# We check for multiple variations since the data isn't always consistent.
+accidents = master[
+    master["status"].astype(str).str.contains(
+        "Accident|Collision|Crash|Spun off",
+        case=False,   # match regardless of capitalisation
+        na=False      # treat NaN as False instead of raising an error
+    )
+]
+
+# Count incidents per race edition (race name + season = unique race)
+top_acc = (
+    accidents.groupby(["season", "race_name"])
+    .size()
+    .sort_values(ascending=False)
+    .head(10)
+    .reset_index(name="accidents")
+)
+
+# Build a two-line label: "Race Name\nYear" so both fit under the bar
+top_acc["label"] = top_acc["race_name"] + "\n" + top_acc["season"].astype(str)
+
+# --- Draw the chart ---
+fig, ax = plt.subplots(figsize=(14, 6))
+
+# Use numeric positions for x so we can apply our custom labels without overlap
+bars = ax.bar(
+    range(len(top_acc)),
+    top_acc["accidents"],
+    color=PALETTE[:len(top_acc)],
+    edgecolor="none",
+    width=0.65
+)
+
+# Add count labels sitting just above each bar
+for bar in bars:
+    ax.text(
+        bar.get_x() + bar.get_width() / 2,
+        bar.get_height() + 0.1,
+        str(int(bar.get_height())),
+        ha="center", fontsize=11,
+        color=F1_GOLD, fontweight="bold"
+    )
+
+# Replace numeric x-ticks with our "Race Name\nYear" labels
+ax.set_xticks(range(len(top_acc)))
+ax.set_xticklabels(top_acc["label"], rotation=20, ha="right", fontsize=9)
+
+ax.set_ylabel("Incidents (Accidents / Collisions / Crashes)")
+ax.set_title("Top 10 Races with Highest Accident Records  |  F1 All-Time")
+ax.grid(axis="y")
+fig.tight_layout()
+save_chart(fig, "Q7 — Top 10 Races with Most Accidents.png")
+plt.close()
+# =============================================================================
+# Finish ....
+# =============================================================================
+print("\n" + "=" * 50)
+print("  ALL DONE — Charts saved to the Outputs folder")
+print("=" * 50 + "\n")
